@@ -1,7 +1,27 @@
-name = "jisr"
+name = "poytz"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
+# POC: Using khamel.com for proof of concept
+# When ready for production, replace with poytz.app
 routes = [
-  { pattern = "khamel.com/*", zone_name = "khamel.com" }
+  { pattern = "khamel.com/*", zone_name = "khamel.com" },
+  { pattern = "*.khamel.com/*", zone_name = "khamel.com" }
 ]
+
+[vars]
+DOMAIN = "khamel.com"
+OAUTH_REDIRECT_URI = "https://khamel.com/auth/callback"
+
+# KV Namespaces
+[[kv_namespaces]]
+binding = "ROUTES"
+id = "dc824698371b4c28b31593edf3b5ea0d"
+
+[[kv_namespaces]]
+binding = "USERS"
+id = "32cabb6d5b364f598d1b26ce6a278d9d"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "acd826daab8845fe9b613a127c567424"
