@@ -8,24 +8,79 @@ yourdomain.com/photos  →  your server, Google Docs, anywhere
 
 ---
 
-## Cost
+## What You Need
 
-| Item | Cost |
-|------|------|
-| Domain | ~$12/year (skip if you have one) |
-| Cloudflare | $0 |
-| Tailscale | $0 (only needed for self-hosting) |
-| **Total** | **$0 - $12/year** |
+| Item | Cost | Time |
+|------|------|------|
+| Domain | ~$12/year (skip if you have one) | 5 min |
+| Cloudflare account | $0 | 5 min |
+| Tailscale account | $0 (only for self-hosting) | 5 min |
+| **Total** | **$0 - $12/year** | **30 min** |
 
 ---
 
-## The Code
+## Step 1: Cloudflare Account + Domain
+
+### Create Cloudflare Account
+
+1. Go to https://dash.cloudflare.com/sign-up
+2. Sign up with email (free)
+
+### Add Your Domain
+
+**Option A: Buy at Cloudflare** (~$12/year)
+1. Cloudflare Dashboard → Domain Registration → Register Domain
+2. Search for your domain, buy it
+3. Done - it's already configured
+
+**Option B: Use Existing Domain**
+1. Cloudflare Dashboard → Add a Site → Enter your domain
+2. Select Free plan
+3. Cloudflare shows you two nameservers (e.g., `ada.ns.cloudflare.com`)
+4. Go to your domain registrar, change nameservers to Cloudflare's
+5. Wait 5-30 minutes for DNS propagation
+
+---
+
+## Step 2: Create Cloudflare API Token
+
+You need a token to deploy from the command line.
+
+1. Go to https://dash.cloudflare.com/profile/api-tokens
+2. Click **Create Token**
+3. Click **Use template** next to "Edit Cloudflare Workers"
+4. Under Account Resources: Select your account
+5. Under Zone Resources: Select "All zones" or your specific domain
+6. Click **Continue to summary** → **Create Token**
+7. **Copy the token** (you won't see it again)
+
+Save it somewhere safe. You'll use it like:
+```bash
+CLOUDFLARE_API_TOKEN=your-token-here wrangler deploy
+```
+
+---
+
+## Step 3: Create the Worker
+
+### Install Wrangler (Cloudflare CLI)
+
+```bash
+npm install -g wrangler
+```
+
+### Create Project
+
+```bash
+mkdir jisr && cd jisr && mkdir src
+```
+
+### Create `src/index.js`
 
 ```javascript
 const ROUTES = {
   'resume': 'https://docs.google.com/document/d/xxx',
   'meet': 'https://zoom.us/j/xxx',
-  'photos': 'https://your-server.ts.net/photos/',
 };
 
 export default {
@@ -37,28 +92,8 @@ export default {
 };
 ```
 
-**15 lines.** Add routes, deploy, done.
+### Create `wrangler.toml`
 
----
-
-## Setup
-
-### 1. Domain + Cloudflare
-
-- Buy a domain at Cloudflare (~$12/year), or
-- Point existing domain's nameservers to Cloudflare
-
-### 2. Create Worker
-
-```bash
-npm install -g wrangler
-wrangler login
-mkdir jisr && cd jisr && mkdir src
-```
-
-Create `src/index.js` with your routes (copy from above).
-
-Create `wrangler.toml`:
 ```toml
 name = "jisr"
 main = "src/index.js"
@@ -66,64 +101,125 @@ compatibility_date = "2024-01-01"
 routes = [{ pattern = "yourdomain.com/*", zone_name = "yourdomain.com" }]
 ```
 
-### 3. Deploy
+Replace `yourdomain.com` with your actual domain.
+
+### Deploy
 
 ```bash
-wrangler deploy
+CLOUDFLARE_API_TOKEN=your-token-here wrangler deploy
 ```
 
-**Done.** `yourdomain.com/resume` now works.
+**Done.** Visit `yourdomain.com/resume` - it redirects.
 
 ---
 
-## Add a Route
+## Step 4: Self-Hosting with Tailscale (Optional)
 
-```javascript
-// Edit src/index.js
-'newpath': 'https://wherever.com/',
-```
+Skip this if you only want to redirect to external URLs (Google Docs, Notion, etc.).
 
-```bash
-wrangler deploy
-```
+### Create Tailscale Account
 
----
+1. Go to https://tailscale.com
+2. Sign up (free for personal use - 100 devices, 3 users)
+3. No credit card needed
 
-## Self-Host with Tailscale
-
-To point routes at your own computer/server:
+### Install Tailscale on Your Server
 
 ```bash
-# Install Tailscale (once)
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
+```
 
-# Expose a service
+First time: opens a browser to authenticate. Click to approve.
+
+### Enable Funnel (Public Access)
+
+Funnel lets the public internet reach your server without port forwarding.
+
+```bash
+# Expose a service running on port 8080
 sudo tailscale funnel --bg --set-path=/photos http://localhost:8080
 ```
 
-Add the route:
-```javascript
-'photos': 'https://your-machine.your-tailnet.ts.net/photos/',
+Find your machine's public URL:
+```bash
+tailscale status
+# Shows: your-machine.your-tailnet.ts.net
 ```
 
-Find your machine name: `tailscale status`
+### Add Route to Your Worker
+
+```javascript
+const ROUTES = {
+  'photos': 'https://your-machine.your-tailnet.ts.net/photos/',
+};
+```
+
+Deploy again:
+```bash
+CLOUDFLARE_API_TOKEN=your-token wrangler deploy
+```
 
 ---
 
-## Move Between Machines
+## Adding More Routes
+
+Edit `src/index.js`:
+```javascript
+const ROUTES = {
+  'resume': 'https://docs.google.com/document/d/xxx',
+  'meet': 'https://zoom.us/j/xxx',
+  'photos': 'https://your-machine.ts.net/photos/',
+  'blog': 'https://notion.so/your-blog',
+  'newroute': 'https://anywhere.com/',
+};
+```
+
+Deploy:
+```bash
+CLOUDFLARE_API_TOKEN=your-token wrangler deploy
+```
+
+---
+
+## Moving a Service Between Machines
 
 ```bash
-# Old machine
+# Stop on old machine
 sudo tailscale funnel --set-path=/photos off
 
-# New machine
+# Start on new machine
 sudo tailscale funnel --bg --set-path=/photos http://localhost:8080
 ```
 
-Change one line in `src/index.js`. Deploy. Done.
+Update one line in `src/index.js` (change the machine name). Deploy.
 
 No DNS changes. No cert changes.
+
+---
+
+## Troubleshooting
+
+### "wrangler: command not found"
+```bash
+npm install -g wrangler
+```
+
+### "Authentication error" on deploy
+Your token is wrong or expired. Create a new one at:
+https://dash.cloudflare.com/profile/api-tokens
+
+### Site shows Cloudflare error
+DNS hasn't propagated yet. Wait 5-30 minutes.
+
+### Tailscale Funnel not working
+```bash
+# Check funnel status
+tailscale serve status
+
+# Make sure your service is actually running
+curl http://localhost:8080
+```
 
 ---
 
@@ -132,39 +228,38 @@ No DNS changes. No cert changes.
 ```
 yourdomain.com/photos
        ↓
-Cloudflare Worker (15 lines)
+Cloudflare (runs your 15 lines of JS)
        ↓
-302 Redirect
+302 Redirect to target
        ↓
 ├── Tailscale Funnel → your server
-├── Google Docs
-├── Notion
+├── Google Docs, Notion, etc.
 └── Any URL
 ```
 
 ---
 
-## Why
+## Free Server (Optional)
 
-| Before | After |
-|--------|-------|
-| Traefik | 15 lines |
-| nginx configs | 15 lines |
-| Let's Encrypt | Automatic |
-| Port forwarding | None |
-| DNS records | Just Cloudflare |
+Don't have a computer running 24/7?
+
+**Oracle Cloud Always Free**: https://www.oracle.com/cloud/free/
+- 1 ARM VM, 6GB RAM, free forever
+- Sign up, create VM, install Tailscale
+
+Or use: old laptop, Raspberry Pi, Mac Mini.
 
 ---
 
-## Free Server (Optional)
+## Why This Works
 
-Need a computer running 24/7 but don't have one?
-
-**Oracle Cloud Always Free**: https://www.oracle.com/cloud/free/
-- Free forever (1 ARM VM, 6GB RAM)
-- Install Tailscale, run your services
-
-Or use: your laptop, old desktop, Raspberry Pi, Mac Mini.
+| Before | After |
+|--------|-------|
+| Traefik config files | 15 lines of JS |
+| nginx reverse proxy | 15 lines of JS |
+| Let's Encrypt certs | Automatic (Tailscale) |
+| Port forwarding | None |
+| Complex DNS | Just Cloudflare |
 
 ---
 
@@ -172,10 +267,19 @@ Or use: your laptop, old desktop, Raspberry Pi, Mac Mini.
 
 ```
 jisr/
-├── src/index.js    ← Routes go here
+├── src/index.js    ← Your routes
 ├── wrangler.toml   ← Cloudflare config
 └── README.md
 ```
+
+---
+
+## Token Summary
+
+| Token | Where to Get It | What It Does |
+|-------|-----------------|--------------|
+| Cloudflare API Token | dash.cloudflare.com/profile/api-tokens | Deploy workers |
+| Tailscale | Automatic on `tailscale up` | Secure tunnel |
 
 ---
 
