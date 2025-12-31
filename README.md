@@ -6,6 +6,8 @@
 yourdomain.com/photos  →  your server, Google Docs, anywhere
 ```
 
+**30 minutes to set up. Runs forever. Zero maintenance.**
+
 ---
 
 ## What You Need
@@ -21,43 +23,72 @@ yourdomain.com/photos  →  your server, Google Docs, anywhere
 
 ## Step 1: Cloudflare Account + Domain
 
+> **One-time setup.** After this, you never touch DNS again.
+
 ### Create Cloudflare Account
 
 1. Go to https://dash.cloudflare.com/sign-up
-2. Sign up with email (free)
+2. Sign up with email (free, no credit card)
 
-### Add Your Domain
+### Add Your Domain to Cloudflare
 
-**Option A: Buy at Cloudflare** (~$12/year)
+**Option A: Buy at Cloudflare** (~$10-15/year)
 1. Cloudflare Dashboard → Domain Registration → Register Domain
 2. Search for your domain, buy it
-3. Done - it's already configured
+3. Done - already configured, skip to Step 2
 
-**Option B: Use Existing Domain**
-1. Cloudflare Dashboard → Add a Site → Enter your domain
-2. Select Free plan
-3. Cloudflare shows you two nameservers (e.g., `ada.ns.cloudflare.com`)
-4. Go to your domain registrar, change nameservers to Cloudflare's
-5. Wait 5-30 minutes for DNS propagation
+**Option B: Use Existing Domain (Squarespace/Google Domains)**
+
+If you have a domain at Squarespace (they bought Google Domains) or anywhere else:
+
+1. **In Cloudflare:**
+   - Dashboard → Add a Site → Enter your domain (e.g., `yourdomain.com`)
+   - Select **Free** plan → Continue
+   - Cloudflare shows you two nameservers, like:
+     ```
+     ada.ns.cloudflare.com
+     bob.ns.cloudflare.com
+     ```
+   - Copy these (you'll need them next)
+
+2. **In Squarespace:**
+   - Go to https://domains.squarespace.com
+   - Click your domain → DNS → DNS Settings
+   - Click "Edit" next to Nameservers
+   - Change from Squarespace nameservers to Cloudflare's:
+     ```
+     ada.ns.cloudflare.com
+     bob.ns.cloudflare.com
+     ```
+   - Save
+
+3. **Wait 5-30 minutes** for DNS to propagate
+
+4. **In Cloudflare:** Refresh - it should show "Active"
+
+**Other registrars:** Same process. Find "Nameservers" or "DNS" settings, point to Cloudflare's nameservers.
 
 ---
 
 ## Step 2: Create Cloudflare API Token
 
-You need a token to deploy from the command line.
+> **One-time setup.** Set it to never expire and forget about it.
 
 1. Go to https://dash.cloudflare.com/profile/api-tokens
 2. Click **Create Token**
 3. Click **Use template** next to "Edit Cloudflare Workers"
 4. Under Account Resources: Select your account
 5. Under Zone Resources: Select "All zones" or your specific domain
-6. Click **Continue to summary** → **Create Token**
-7. **Copy the token** (you won't see it again)
+6. **TTL (Expiration):** Leave blank or set far future (never expire)
+7. Click **Continue to summary** → **Create Token**
+8. **Copy the token** (you won't see it again)
 
-Save it somewhere safe. You'll use it like:
+Save it somewhere safe (password manager, notes app). You'll use it like:
 ```bash
 CLOUDFLARE_API_TOKEN=your-token-here wrangler deploy
 ```
+
+**Token never expires = zero maintenance.** You'll only need it when adding new routes.
 
 ---
 
