@@ -8,6 +8,44 @@ khamel.com/photos  →  homelab.deer-panga.ts.net/photos/  →  Immich
 
 ---
 
+## Why Poytz?
+
+### The Problem
+
+You have a homelab. You want to access it from anywhere. The usual options:
+
+| Approach | Downsides |
+|----------|-----------|
+| Port forwarding | Security risk, needs static IP, ISP blocks ports |
+| Cloudflare Tunnel | Another service to manage, can go down |
+| Traefik/Caddy | SSL certs, config files, labels on every container |
+| VPN only | Can't share links with family, no public access |
+
+### The Solution
+
+Poytz + Tailscale Funnel = **zero maintenance external access**.
+
+- **Cloudflare Workers** run your redirects (free tier: 100k req/day)
+- **Tailscale Funnel** exposes your homelab (free, punches through NAT)
+- **One nginx config** routes to all services (vs labels on every container)
+
+### This Is For You If
+
+- You have a homelab and want external access without complexity
+- You want `yourdomain.com/photos` instead of `192.168.1.50:2283`
+- You're tired of managing SSL certificates
+- You want features like clipboard sync, paste sharing, webhooks for free
+- You value simplicity over flexibility
+
+### This Is NOT For You If
+
+- You need to hide the destination URL (Poytz uses 302 redirects)
+- You need load balancing or advanced routing rules
+- You're running a production SaaS (this is personal infrastructure)
+- You need sub-millisecond latency (there's a redirect hop)
+
+---
+
 ## What This Does
 
 | Feature | Endpoint | Description |
