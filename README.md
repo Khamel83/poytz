@@ -1,321 +1,320 @@
-# Jisr
+# Poytz
 
-**Personal URL shortener.** Arabic for "bridge" (جسر).
+**Personal cloud infrastructure on Cloudflare Workers.** Write once, run forever, $0/month.
 
 ```
-yourdomain.com/photos  →  your server, Google Docs, anywhere
+khamel.com/photos  →  homelab.deer-panga.ts.net/photos/  →  Immich
 ```
 
-**30 minutes to set up. Runs forever. Zero maintenance.**
+---
+
+## What This Does
+
+| Feature | Endpoint | Description |
+|---------|----------|-------------|
+| URL Shortener | `khamel.com/photos` | 302 redirect to any URL |
+| Public API | `/api/routes` | CRUD routes programmatically |
+| Webhook Receiver | `/hooks/*` | Store webhooks for later processing |
+| Clipboard Sync | `/clip` | Copy on one device, paste on another |
+| Paste/Share | `/paste`, `/p/*` | Share text with short URLs |
+| Status Page | `/status` | Public health dashboard |
+| Admin UI | `/admin` | Web interface for route management |
+| Auth Proxy | `/secure/*` | OAuth-protected redirects |
+| Home API | `/home/*` | Trigger Home Assistant actions |
 
 ---
 
-## What You Need
+## Architecture
 
-| Item | Cost | Time |
-|------|------|------|
-| Domain | ~$12/year (skip if you have one) | 5 min |
-| Cloudflare account | $0 | 5 min |
-| Tailscale account | $0 (only for self-hosting) | 5 min |
-| **Total** | **$0 - $12/year** | **30 min** |
-
----
-
-## Step 1: Cloudflare Account + Domain
-
-> **One-time setup.** After this, you never touch DNS again.
-
-### Create Cloudflare Account
-
-1. Go to https://dash.cloudflare.com/sign-up
-2. Sign up with email (free, no credit card)
-
-### Add Your Domain to Cloudflare
-
-**Option A: Buy at Cloudflare** (~$10-15/year)
-1. Cloudflare Dashboard → Domain Registration → Register Domain
-2. Search for your domain, buy it
-3. Done - already configured, skip to Step 2
-
-**Option B: Use Existing Domain (Squarespace/Google Domains)**
-
-If you have a domain at Squarespace (they bought Google Domains) or anywhere else:
-
-1. **In Cloudflare:**
-   - Dashboard → Add a Site → Enter your domain (e.g., `yourdomain.com`)
-   - Select **Free** plan → Continue
-   - Cloudflare shows you two nameservers, like:
-     ```
-     ada.ns.cloudflare.com
-     bob.ns.cloudflare.com
-     ```
-   - Copy these (you'll need them next)
-
-2. **In Squarespace:**
-   - Go to https://domains.squarespace.com
-   - Click your domain → DNS → DNS Settings
-   - Click "Edit" next to Nameservers
-   - Change from Squarespace nameservers to Cloudflare's:
-     ```
-     ada.ns.cloudflare.com
-     bob.ns.cloudflare.com
-     ```
-   - Save
-
-3. **Wait 5-30 minutes** for DNS to propagate
-
-4. **In Cloudflare:** Refresh - it should show "Active"
-
-**Other registrars:** Same process. Find "Nameservers" or "DNS" settings, point to Cloudflare's nameservers.
-
----
-
-## Step 2: Create Cloudflare API Token
-
-> **One-time setup.** Set it to never expire and forget about it.
-
-1. Go to https://dash.cloudflare.com/profile/api-tokens
-2. Click **Create Token**
-3. Click **Use template** next to "Edit Cloudflare Workers"
-4. Under Account Resources: Select your account
-5. Under Zone Resources: Select "All zones" or your specific domain
-6. **TTL (Expiration):** Leave blank or set far future (never expire)
-7. Click **Continue to summary** → **Create Token**
-8. **Copy the token** (you won't see it again)
-
-Save it somewhere safe (password manager, notes app). You'll use it like:
-```bash
-CLOUDFLARE_API_TOKEN=your-token-here wrangler deploy
+```
+                    CLOUDFLARE (Always On, Free Forever)
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│   khamel.com/* ──→ Poytz Worker ──→ KV Storage                     │
+│                         │                                           │
+│                         ├── /photos      → 302 redirect             │
+│                         ├── /api/*       → CRUD routes              │
+│                         ├── /hooks/*     → Store webhook → KV       │
+│                         ├── /clip        → GET/POST clipboard       │
+│                         ├── /p/*         → Serve paste              │
+│                         ├── /status      → Health dashboard         │
+│                         ├── /secure/*    → OAuth → redirect         │
+│                         ├── /home/*      → Forward to HA            │
+│                         └── /admin       → Web UI                   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    TAILSCALE FUNNELS (Always On, Free)
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│   homelab.deer-panga.ts.net/* ──→ funnel-proxy (nginx) ──→ Docker  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Token never expires = zero maintenance.** You'll only need it when adding new routes.
-
 ---
 
-## Step 3: Create the Worker
+## Quick Start
 
-### Install Wrangler (Cloudflare CLI)
+### Prerequisites
+
+- Cloudflare account with a domain
+- Wrangler CLI (`npm install -g wrangler`)
+- Google Cloud project for OAuth
+
+### 1. Clone and Install
 
 ```bash
-npm install -g wrangler
+git clone https://github.com/Khamel83/poytz.git
+cd poytz
+npm install
 ```
 
-### Create Project
+### 2. Create KV Namespaces
 
 ```bash
-mkdir jisr && cd jisr && mkdir src
+npx wrangler kv:namespace create ROUTES
+npx wrangler kv:namespace create SESSIONS
+npx wrangler kv:namespace create WEBHOOKS
+npx wrangler kv:namespace create CLIPBOARD
+npx wrangler kv:namespace create PASTES
+npx wrangler kv:namespace create STATUS
 ```
 
-### Create `src/index.js`
+Copy the IDs to `wrangler.toml`.
 
-```javascript
-const ROUTES = {
-  'resume': 'https://docs.google.com/document/d/xxx',
-  'meet': 'https://zoom.us/j/xxx',
-};
+### 3. Set Up Google OAuth
 
-export default {
-  async fetch(request) {
-    const path = new URL(request.url).pathname.slice(1);
-    if (ROUTES[path]) return Response.redirect(ROUTES[path], 302);
-    return new Response('Not found', { status: 404 });
-  }
-};
+1. Go to [console.cloud.google.com](https://console.cloud.google.com)
+2. Create project → OAuth consent screen → Credentials
+3. Create OAuth 2.0 Client ID (Web application)
+4. Set redirect URI: `https://yourdomain.com/auth/callback`
+5. Add secrets:
+
+```bash
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put POYTZ_API_KEY  # openssl rand -hex 32
 ```
 
-### Create `wrangler.toml`
+### 4. Configure wrangler.toml
 
 ```toml
-name = "jisr"
+name = "poytz"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
-routes = [{ pattern = "yourdomain.com/*", zone_name = "yourdomain.com" }]
+
+routes = [
+  { pattern = "yourdomain.com/*", zone_name = "yourdomain.com" }
+]
+
+[vars]
+DOMAIN = "yourdomain.com"
+OAUTH_REDIRECT_URI = "https://yourdomain.com/auth/callback"
+
+[[kv_namespaces]]
+binding = "ROUTES"
+id = "your-routes-id"
+
+# ... add all namespace IDs
 ```
 
-Replace `yourdomain.com` with your actual domain.
-
-### Deploy
+### 5. Deploy
 
 ```bash
-CLOUDFLARE_API_TOKEN=your-token-here wrangler deploy
-```
-
-**Done.** Visit `yourdomain.com/resume` - it redirects.
-
----
-
-## Step 4: Self-Hosting with Tailscale (Optional)
-
-Skip this if you only want to redirect to external URLs (Google Docs, Notion, etc.).
-
-### Create Tailscale Account
-
-1. Go to https://tailscale.com
-2. Sign up (free for personal use - 100 devices, 3 users)
-3. No credit card needed
-
-### Install Tailscale on Your Server
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-```
-
-First time: opens a browser to authenticate. Click to approve.
-
-### Enable Funnel (Public Access)
-
-Funnel lets the public internet reach your server without port forwarding.
-
-```bash
-# Expose a service running on port 8080
-sudo tailscale funnel --bg --set-path=/photos http://localhost:8080
-```
-
-Find your machine's public URL:
-```bash
-tailscale status
-# Shows: your-machine.your-tailnet.ts.net
-```
-
-### Add Route to Your Worker
-
-```javascript
-const ROUTES = {
-  'photos': 'https://your-machine.your-tailnet.ts.net/photos/',
-};
-```
-
-Deploy again:
-```bash
-CLOUDFLARE_API_TOKEN=your-token wrangler deploy
+npx wrangler deploy
 ```
 
 ---
 
-## Adding More Routes
+## API Usage
 
-Edit `src/index.js`:
-```javascript
-const ROUTES = {
-  'resume': 'https://docs.google.com/document/d/xxx',
-  'meet': 'https://zoom.us/j/xxx',
-  'photos': 'https://your-machine.ts.net/photos/',
-  'blog': 'https://notion.so/your-blog',
-  'newroute': 'https://anywhere.com/',
-};
-```
+All API endpoints require authentication via `X-API-Key` header or session cookie.
 
-Deploy:
-```bash
-CLOUDFLARE_API_TOKEN=your-token wrangler deploy
-```
-
----
-
-## Moving a Service Between Machines
+### Routes API
 
 ```bash
-# Stop on old machine
-sudo tailscale funnel --set-path=/photos off
+# List all routes
+curl https://khamel.com/api/routes -H "X-API-Key: $KEY"
 
-# Start on new machine
-sudo tailscale funnel --bg --set-path=/photos http://localhost:8080
+# Add a route
+curl -X POST https://khamel.com/api/routes \
+  -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "photos", "target": "https://photos.example.com/"}'
+
+# Delete a route
+curl -X DELETE https://khamel.com/api/routes/photos -H "X-API-Key: $KEY"
 ```
 
-Update one line in `src/index.js` (change the machine name). Deploy.
+### Clipboard Sync
 
-No DNS changes. No cert changes.
-
----
-
-## Troubleshooting
-
-### "wrangler: command not found"
 ```bash
-npm install -g wrangler
+# Copy (set clipboard)
+echo "some text" | curl -X POST https://khamel.com/clip -H "X-API-Key: $KEY" -d @-
+
+# Paste (get clipboard)
+curl https://khamel.com/clip -H "X-API-Key: $KEY"
+
+# Clear clipboard
+curl -X DELETE https://khamel.com/clip -H "X-API-Key: $KEY"
 ```
 
-### "Authentication error" on deploy
-Your token is wrong or expired. Create a new one at:
-https://dash.cloudflare.com/profile/api-tokens
+### Paste/Share
 
-### Site shows Cloudflare error
-DNS hasn't propagated yet. Wait 5-30 minutes.
-
-### Tailscale Funnel not working
 ```bash
-# Check funnel status
-tailscale serve status
+# Create a paste (returns URL)
+echo "share this text" | curl -X POST https://khamel.com/paste -d @-
+# Output: https://khamel.com/p/abc123
 
-# Make sure your service is actually running
-curl http://localhost:8080
+# Create with custom expiry (days, max 30)
+curl -X POST "https://khamel.com/paste?expire=1" -d "expires tomorrow"
+
+# Read a paste
+curl https://khamel.com/p/abc123
+```
+
+### Webhooks
+
+```bash
+# Receive webhooks (no auth required)
+curl -X POST https://khamel.com/hooks/github -d '{"event": "push"}'
+
+# List webhooks (auth required)
+curl https://khamel.com/api/webhooks -H "X-API-Key: $KEY"
+
+# Mark webhook processed
+curl -X POST https://khamel.com/api/webhooks/hook:github:123456/process -H "X-API-Key: $KEY"
+```
+
+### Home Assistant
+
+```bash
+# Toggle a light
+curl https://khamel.com/home/light/office/toggle -H "X-API-Key: $KEY"
+
+# Turn on a switch
+curl https://khamel.com/home/switch/fan/turn_on -H "X-API-Key: $KEY"
+
+# Run a script
+curl https://khamel.com/home/script/goodnight/turn_on -H "X-API-Key: $KEY"
 ```
 
 ---
 
-## How It Works
+## KV Namespaces
 
-```
-yourdomain.com/photos
-       ↓
-Cloudflare (runs your 15 lines of JS)
-       ↓
-302 Redirect to target
-       ↓
-├── Tailscale Funnel → your server
-├── Google Docs, Notion, etc.
-└── Any URL
-```
+| Namespace | Purpose | Key Format |
+|-----------|---------|------------|
+| ROUTES | URL shortener routes | `khamel:path` → `target_url` |
+| SESSIONS | Auth sessions | `session_id` → `{user, expires}` |
+| WEBHOOKS | Stored webhooks | `hook:source:timestamp` → `{payload}` |
+| CLIPBOARD | Clipboard sync | `clip:username` → `{content, timestamp}` |
+| PASTES | Shared pastes | `paste:id` → `{content, created, views}` |
+| STATUS | Health check cache | `status:service` → `{status, checked}` |
 
 ---
 
-## Free Server (Optional)
+## Secrets
 
-Don't have a computer running 24/7?
-
-**Oracle Cloud Always Free**: https://www.oracle.com/cloud/free/
-- 1 ARM VM, 6GB RAM, free forever
-- Sign up, create VM, install Tailscale
-
-Or use: old laptop, Raspberry Pi, Mac Mini.
-
----
-
-## Why This Works
-
-| Before | After |
-|--------|-------|
-| Traefik config files | 15 lines of JS |
-| nginx reverse proxy | 15 lines of JS |
-| Let's Encrypt certs | Automatic (Tailscale) |
-| Port forwarding | None |
-| Complex DNS | Just Cloudflare |
+| Secret | Purpose |
+|--------|---------|
+| GOOGLE_CLIENT_ID | OAuth authentication |
+| GOOGLE_CLIENT_SECRET | OAuth authentication |
+| POYTZ_API_KEY | API authentication |
+| HA_TOKEN | Home Assistant long-lived token (optional) |
 
 ---
 
 ## Files
 
 ```
-jisr/
-├── src/index.js    ← Your routes
-├── wrangler.toml   ← Cloudflare config
-└── README.md
+poytz/
+├── src/index.js      ← Worker code (~1300 lines)
+├── wrangler.toml     ← Cloudflare config
+├── README.md         ← This file
+└── thoughts/         ← Planning docs
 ```
 
 ---
 
-## Token Summary
+## Costs
 
-| Token | Where to Get It | What It Does |
-|-------|-----------------|--------------|
-| Cloudflare API Token | dash.cloudflare.com/profile/api-tokens | Deploy workers |
-| Tailscale | Automatic on `tailscale up` | Secure tunnel |
+| Item | Cost |
+|------|------|
+| Cloudflare Workers | $0 (free tier: 100k req/day) |
+| Cloudflare KV | $0 (free tier: 100k reads/day) |
+| Google OAuth | $0 forever |
+| Tailscale | $0 (free tier) |
+| Domain | ~$15/year |
+| **Total** | **~$15/year** |
 
 ---
 
-## Name
+## Integration with Homelab
 
-Jisr (جسر) = "bridge" in Arabic.
+Poytz replaces Traefik + Cloudflare Tunnel for external access:
 
-Bridges your short URLs to anywhere.
+**Old way:**
+```
+khamel.com → Cloudflare Tunnel → Traefik → Docker container
+```
+
+**New way:**
+```
+khamel.com → Poytz (302) → Tailscale Funnel → funnel-proxy → Docker container
+```
+
+See `homelab/services/funnel-proxy/` for the nginx configuration.
+
+---
+
+## Current Routes
+
+| Path | Target |
+|------|--------|
+| /jellyfin | Jellyfin media server |
+| /photos | Immich photo library |
+| /recipes | Mealie recipes |
+| /request | Jellyseerr media requests |
+| /sonarr | TV automation |
+| /radarr | Movie automation |
+| /books | Calibre-Web ebooks |
+| /docs | Paperless-NGX documents |
+| /portainer | Docker management |
+| /home | Homepage dashboard |
+| ... | 26 total routes |
+
+---
+
+## Local Development
+
+```bash
+# Run locally
+npx wrangler dev
+
+# Deploy to production
+npx wrangler deploy
+
+# View logs
+npx wrangler tail
+```
+
+---
+
+## Rollback
+
+If something breaks, restore Pi-hole override:
+
+```bash
+echo 'address=/.khamel.com/192.168.7.10' >> /mnt/main-drive/appdata/pihole/etc-dnsmasq.d/99-local-domains.conf
+docker restart pihole
+```
+
+Then restore Traefik:
+
+```bash
+mv ~/github/homelab/services/.archive/traefik-20260101 ~/github/homelab/services/traefik
+cd ~/github/homelab/services/traefik && docker compose up -d
+```

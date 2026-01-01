@@ -2,11 +2,9 @@ name = "poytz"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# POC: Using khamel.com for proof of concept
-# When ready for production, replace with poytz.app
+# Routes
 routes = [
-  { pattern = "khamel.com/*", zone_name = "khamel.com" },
-  { pattern = "*.khamel.com/*", zone_name = "khamel.com" }
+  { pattern = "khamel.com/*", zone_name = "khamel.com" }
 ]
 
 [vars]
@@ -19,9 +17,26 @@ binding = "ROUTES"
 id = "dc824698371b4c28b31593edf3b5ea0d"
 
 [[kv_namespaces]]
-binding = "USERS"
-id = "32cabb6d5b364f598d1b26ce6a278d9d"
-
-[[kv_namespaces]]
 binding = "SESSIONS"
 id = "acd826daab8845fe9b613a127c567424"
+
+[[kv_namespaces]]
+binding = "WEBHOOKS"
+id = "14ce9b42d89047bbb32ec118f2f27b10"
+
+[[kv_namespaces]]
+binding = "CLIPBOARD"
+id = "631d674097374625a48972fac43d4845"
+
+[[kv_namespaces]]
+binding = "PASTES"
+id = "0094069c06f64b11b0548a4ae11e19e0"
+
+[[kv_namespaces]]
+binding = "STATUS"
+id = "9b95a43338904c87b1dac6b5fddcb903"
+
+# Cron Triggers - health checks every 5 minutes
+# Requires workers.dev subdomain - enable after initial deploy
+# [triggers]
+# crons = ["*/5 * * * *"]

@@ -1,48 +1,95 @@
 /**
- * Poytz - Personal URL Shortener
+ * Poytz - Personal Cloud Infrastructure
  *
- * Routes:
- * - poytz.app/           → Landing page
- * - poytz.app/auth/login → Google OAuth redirect
- * - poytz.app/auth/callback → OAuth callback
- * - user.poytz.app/admin → Admin UI (authenticated)
- * - user.poytz.app/*     → Redirect to target
+ * Features:
+ * - URL Shortener (redirects)
+ * - Public API (route management)
+ * - Webhook Receiver (store for later)
+ * - Clipboard Sync (cross-device)
+ * - Paste/Share (short URLs for text)
+ * - Status Page (health dashboard)
+ * - Auth Proxy (OAuth for any service)
+ * - Home API (Home Assistant triggers)
+ * - Cron Jobs (health checks, cleanup)
+ *
+ * Cost: $0/month forever (Cloudflare Workers free tier)
  */
+
+const AUTHORIZED_EMAIL = 'zoheri@gmail.com';
+const USERNAME = 'khamel';
+const FUNNEL_BASE = 'https://homelab.deer-panga.ts.net';
 
 // ============================================================================
 // MAIN ROUTER
 // ============================================================================
 
 export default {
+  // HTTP Handler
   async fetch(request, env) {
     const url = new URL(request.url);
-    const hostname = url.hostname;
     const path = url.pathname;
 
     try {
-      // Extract subdomain (null if apex domain like poytz.app)
-      const subdomain = getSubdomain(hostname);
+      // Static routes
+      if (path === '/') return homepage(env);
+      if (path === '/status') return statusPage(env);
 
-      // Apex domain routes (poytz.app)
-      if (!subdomain) {
-        if (path === '/') return landingPage(env);
-        if (path === '/auth/login') return handleOAuthLogin(env);
-        if (path === '/auth/callback') return handleOAuthCallback(request, env);
-        if (path === '/auth/logout') return handleLogout();
-        return notFound();
-      }
+      // Auth routes
+      if (path === '/auth/login') return handleOAuthLogin(request, env);
+      if (path === '/auth/callback') return handleOAuthCallback(request, env);
+      if (path === '/auth/logout') return handleLogout(env);
 
-      // Subdomain routes (user.poytz.app)
+      // Admin UI (session auth)
       if (path === '/admin' || path.startsWith('/admin/')) {
-        return handleAdmin(request, env, subdomain);
+        return handleAdmin(request, env, path);
       }
 
-      // Public redirect
-      return handleRedirect(subdomain, path, env);
+      // Public API (API key or session auth)
+      if (path.startsWith('/api/')) {
+        return handleAPI(request, env, path);
+      }
+
+      // Webhook receiver (no auth - external services send here)
+      if (path.startsWith('/hooks/')) {
+        return handleWebhook(request, env, path);
+      }
+
+      // Clipboard sync (API key auth)
+      if (path === '/clip' || path.startsWith('/clip/')) {
+        return handleClipboard(request, env);
+      }
+
+      // Paste/share
+      if (path.startsWith('/p/')) {
+        return handlePasteRead(request, env, path);
+      }
+      if (path === '/paste') {
+        return handlePasteCreate(request, env);
+      }
+
+      // Auth proxy (OAuth protected redirects)
+      if (path.startsWith('/secure/')) {
+        return handleSecureProxy(request, env, path);
+      }
+
+      // Home Assistant API
+      if (path.startsWith('/home/')) {
+        return handleHomeAPI(request, env, path);
+      }
+
+      // Default: URL shortener redirect
+      return handleRedirect(path, env);
+
     } catch (error) {
       console.error('Error:', error);
       return new Response(`Error: ${error.message}`, { status: 500 });
     }
+  },
+
+  // Cron Handler (runs every 5 minutes)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runHealthChecks(env));
+    ctx.waitUntil(cleanupOldWebhooks(env));
   }
 };
 
@@ -50,40 +97,82 @@ export default {
 // HELPERS
 // ============================================================================
 
-function getSubdomain(hostname) {
-  // Handle localhost for dev
-  if (hostname === 'localhost' || hostname.startsWith('127.')) {
-    return null;
-  }
-
-  const parts = hostname.split('.');
-  // poytz.app = 2 parts, user.poytz.app = 3 parts
-  if (parts.length <= 2) return null;
-  return parts[0];
-}
-
-function notFound() {
-  return new Response('Not found', { status: 404 });
-}
-
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
   return Object.fromEntries(
-    cookieHeader.split(';').map(c => c.trim().split('=').map(s => s.trim()))
+    cookieHeader.split(';').map(c => {
+      const [key, ...rest] = c.trim().split('=');
+      return [key, rest.join('=')];
+    })
   );
+}
+
+function getDomain(env) {
+  return env.DOMAIN || 'khamel.com';
+}
+
+function getRedirectUri(env) {
+  return env.OAUTH_REDIRECT_URI || `https://${getDomain(env)}/auth/callback`;
+}
+
+function generateShortId(length = 6) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = '';
+  for (let i = 0; i < length; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
+function truncateUrl(url) {
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+// ============================================================================
+// AUTHENTICATION
+// ============================================================================
+
+async function authenticate(request, env) {
+  // Try session cookie first
+  const session = await getSession(request, env);
+  if (session) return { type: 'session', user: session };
+
+  // Try API key
+  const apiKey = request.headers.get('X-API-Key');
+  if (apiKey && apiKey === env.POYTZ_API_KEY) {
+    return { type: 'api', user: { username: USERNAME, email: AUTHORIZED_EMAIL } };
+  }
+
+  return null;
+}
+
+async function getSession(request, env) {
+  const cookies = parseCookies(request.headers.get('Cookie'));
+  const sessionId = cookies.session;
+
+  if (!sessionId) return null;
+
+  const sessionData = await env.SESSIONS.get(sessionId);
+  if (!sessionData) return null;
+
+  return JSON.parse(sessionData);
 }
 
 // ============================================================================
 // GOOGLE OAUTH
 // ============================================================================
 
-function handleOAuthLogin(env) {
+function handleOAuthLogin(request, env) {
+  const url = new URL(request.url);
+  const returnUrl = url.searchParams.get('return') || '';
+
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
     redirect_uri: getRedirectUri(env),
     response_type: 'code',
     scope: 'email profile',
-    access_type: 'online'
+    access_type: 'online',
+    state: returnUrl // Pass return URL in state
   });
 
   return Response.redirect(
@@ -96,6 +185,7 @@ async function handleOAuthCallback(request, env) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   const error = url.searchParams.get('error');
+  const returnUrl = url.searchParams.get('state') || '';
 
   if (error) {
     return new Response(`OAuth error: ${error}`, { status: 400 });
@@ -131,11 +221,9 @@ async function handleOAuthCallback(request, env) {
 
   const user = await userResponse.json();
 
-  // Look up username by email
-  const username = await env.USERS.get(`email:${user.email}`);
-
-  if (!username) {
-    return new Response(noAccountPage(user.email), {
+  // Check if authorized user
+  if (user.email !== AUTHORIZED_EMAIL) {
+    return new Response(unauthorizedPage(user.email), {
       status: 403,
       headers: { 'Content-Type': 'text/html' }
     });
@@ -145,126 +233,65 @@ async function handleOAuthCallback(request, env) {
   const sessionId = crypto.randomUUID();
   await env.SESSIONS.put(sessionId, JSON.stringify({
     email: user.email,
-    username
+    username: USERNAME
   }), { expirationTtl: 30 * 24 * 60 * 60 }); // 30 days
 
-  // Redirect to admin with session cookie
   const domain = getDomain(env);
+
+  // Check for return URL (from secure proxy)
+  if (returnUrl && returnUrl.startsWith('https://')) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': returnUrl,
+        'Set-Cookie': `session=${sessionId}; HttpOnly; Secure; SameSite=Lax; Domain=.${domain}; Max-Age=${30 * 24 * 60 * 60}; Path=/`
+      }
+    });
+  }
+
+  // Default redirect to admin
   return new Response(null, {
     status: 302,
     headers: {
-      'Location': `https://${username}.${domain}/admin`,
+      'Location': `https://${domain}/admin`,
       'Set-Cookie': `session=${sessionId}; HttpOnly; Secure; SameSite=Lax; Domain=.${domain}; Max-Age=${30 * 24 * 60 * 60}; Path=/`
     }
   });
 }
 
-function handleLogout() {
+function handleLogout(env) {
+  const domain = getDomain(env);
   return new Response(null, {
     status: 302,
     headers: {
       'Location': '/',
-      'Set-Cookie': 'session=; HttpOnly; Secure; SameSite=Lax; Max-Age=0; Path=/'
+      'Set-Cookie': `session=; HttpOnly; Secure; SameSite=Lax; Domain=.${domain}; Max-Age=0; Path=/`
     }
   });
 }
 
-function getRedirectUri(env) {
-  // Use env var or default to poytz.app
-  return env.OAUTH_REDIRECT_URI || 'https://poytz.app/auth/callback';
-}
-
-function getDomain(env) {
-  return env.DOMAIN || 'poytz.app';
-}
-
 // ============================================================================
-// SESSION MANAGEMENT
+// URL SHORTENER (REDIRECTS)
 // ============================================================================
 
-async function getSession(request, env) {
-  const cookies = parseCookies(request.headers.get('Cookie'));
-  const sessionId = cookies.session;
+async function handleRedirect(path, env) {
+  const routePath = path.slice(1);
+  if (!routePath) return homepage(env);
 
-  if (!sessionId) return null;
+  const [route, ...rest] = routePath.split('/');
+  const target = await env.ROUTES.get(`${USERNAME}:${route}`);
 
-  const sessionData = await env.SESSIONS.get(sessionId);
-  if (!sessionData) return null;
+  if (!target) {
+    return new Response(`Route not found: /${route}`, { status: 404 });
+  }
 
-  return JSON.parse(sessionData);
+  const subpath = rest.join('/');
+  const finalTarget = subpath ? `${target.replace(/\/$/, '')}/${subpath}` : target;
+  return Response.redirect(finalTarget, 302);
 }
 
-// ============================================================================
-// ADMIN UI
-// ============================================================================
-
-async function handleAdmin(request, env, subdomain) {
-  const session = await getSession(request, env);
-
-  // Not logged in - redirect to login
-  if (!session) {
-    const domain = getDomain(env);
-    return Response.redirect(`https://${domain}/auth/login`, 302);
-  }
-
-  // Wrong user - can't access another user's admin
-  if (session.username !== subdomain) {
-    return new Response('Forbidden: This is not your subdomain', { status: 403 });
-  }
-
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  // API routes
-  if (path.startsWith('/admin/api/')) {
-    return handleAdminAPI(request, env, subdomain, path);
-  }
-
-  // Admin UI
-  const routes = await getRoutesForUser(env, subdomain);
-  return new Response(adminPage(subdomain, routes), {
-    headers: { 'Content-Type': 'text/html' }
-  });
-}
-
-async function handleAdminAPI(request, env, subdomain, path) {
-  const method = request.method;
-
-  // GET /admin/api/routes - List routes
-  if (method === 'GET' && path === '/admin/api/routes') {
-    const routes = await getRoutesForUser(env, subdomain);
-    return Response.json(routes);
-  }
-
-  // POST /admin/api/routes - Create route
-  if (method === 'POST' && path === '/admin/api/routes') {
-    const { path: routePath, target } = await request.json();
-
-    if (!routePath || !target) {
-      return Response.json({ error: 'Missing path or target' }, { status: 400 });
-    }
-
-    // Validate path (alphanumeric, dashes, underscores)
-    if (!/^[a-z0-9_-]+$/i.test(routePath)) {
-      return Response.json({ error: 'Invalid path format' }, { status: 400 });
-    }
-
-    await env.ROUTES.put(`${subdomain}:${routePath}`, target);
-    return Response.json({ success: true });
-  }
-
-  // DELETE /admin/api/routes/:path - Delete route
-  if (method === 'DELETE' && path.startsWith('/admin/api/routes/')) {
-    const routePath = decodeURIComponent(path.replace('/admin/api/routes/', ''));
-    await env.ROUTES.delete(`${subdomain}:${routePath}`);
-    return Response.json({ success: true });
-  }
-
-  return Response.json({ error: 'Not found' }, { status: 404 });
-}
-
-async function getRoutesForUser(env, username) {
-  const prefix = `${username}:`;
+async function getRoutes(env) {
+  const prefix = `${USERNAME}:`;
   const list = await env.ROUTES.list({ prefix });
 
   const routes = [];
@@ -280,175 +307,738 @@ async function getRoutesForUser(env, username) {
 }
 
 // ============================================================================
-// REDIRECT HANDLER
+// PUBLIC API
 // ============================================================================
 
-async function handleRedirect(subdomain, path, env) {
-  const routePath = path.slice(1); // Remove leading /
-
-  // Handle root path
-  if (!routePath) {
-    return userLandingPage(subdomain);
+async function handleAPI(request, env, path) {
+  const auth = await authenticate(request, env);
+  if (!auth) {
+    return Response.json({ error: 'Unauthorized' }, {
+      status: 401,
+      headers: { 'WWW-Authenticate': 'API key via X-API-Key header' }
+    });
   }
 
-  // Check for direct route match
-  const [route, ...rest] = routePath.split('/');
-  const target = await env.ROUTES.get(`${subdomain}:${route}`);
+  const method = request.method;
 
-  if (!target) {
-    return new Response(`Route not found: /${route}`, { status: 404 });
+  // GET /api/routes - List all routes
+  if (method === 'GET' && path === '/api/routes') {
+    const routes = await getRoutes(env);
+    return Response.json({ routes });
   }
 
-  // Append subpath if present
-  const subpath = rest.join('/');
-  const finalTarget = subpath ? `${target.replace(/\/$/, '')}/${subpath}` : target;
+  // POST /api/routes - Create route
+  if (method === 'POST' && path === '/api/routes') {
+    const { path: routePath, target } = await request.json();
+    if (!routePath || !target) {
+      return Response.json({ error: 'Missing path or target' }, { status: 400 });
+    }
+    if (!/^[a-z0-9_-]+$/i.test(routePath)) {
+      return Response.json({ error: 'Invalid path format' }, { status: 400 });
+    }
+    await env.ROUTES.put(`${USERNAME}:${routePath}`, target);
+    return Response.json({ success: true, path: routePath, target });
+  }
 
-  return Response.redirect(finalTarget, 302);
+  // DELETE /api/routes/:path - Delete route
+  if (method === 'DELETE' && path.startsWith('/api/routes/')) {
+    const routePath = decodeURIComponent(path.replace('/api/routes/', ''));
+    await env.ROUTES.delete(`${USERNAME}:${routePath}`);
+    return Response.json({ success: true, deleted: routePath });
+  }
+
+  // GET /api/webhooks - List webhooks
+  if (method === 'GET' && path === '/api/webhooks') {
+    const webhooks = await getWebhooks(env);
+    return Response.json({ webhooks });
+  }
+
+  // POST /api/webhooks/:id/processed - Mark webhook as processed
+  if (method === 'POST' && path.match(/^\/api\/webhooks\/[^/]+\/processed$/)) {
+    const id = path.split('/')[3];
+    const data = await env.WEBHOOKS.get(id);
+    if (!data) {
+      return Response.json({ error: 'Webhook not found' }, { status: 404 });
+    }
+    const webhook = JSON.parse(data);
+    webhook.processed = true;
+    await env.WEBHOOKS.put(id, JSON.stringify(webhook));
+    return Response.json({ success: true });
+  }
+
+  // GET /api/status - Get service status
+  if (method === 'GET' && path === '/api/status') {
+    const status = await getServiceStatus(env);
+    return Response.json({ services: status });
+  }
+
+  return Response.json({ error: 'Not found' }, { status: 404 });
+}
+
+// ============================================================================
+// WEBHOOK RECEIVER
+// ============================================================================
+
+async function handleWebhook(request, env, path) {
+  // Extract source from path: /hooks/github, /hooks/stripe, etc.
+  const source = path.replace('/hooks/', '').split('/')[0] || 'unknown';
+
+  // Only accept POST
+  if (request.method !== 'POST') {
+    return Response.json({ error: 'POST only' }, { status: 405 });
+  }
+
+  // Store webhook with timestamp
+  const timestamp = Date.now();
+  const id = `hook:${source}:${timestamp}`;
+
+  const payload = {
+    source,
+    timestamp,
+    headers: Object.fromEntries(request.headers),
+    body: await request.text(),
+    processed: false
+  };
+
+  // Store for 7 days
+  await env.WEBHOOKS.put(id, JSON.stringify(payload), {
+    expirationTtl: 7 * 24 * 60 * 60
+  });
+
+  return Response.json({
+    success: true,
+    id,
+    message: 'Webhook stored for processing'
+  });
+}
+
+async function getWebhooks(env, source = null, onlyUnprocessed = false) {
+  const prefix = source ? `hook:${source}:` : 'hook:';
+  const list = await env.WEBHOOKS.list({ prefix });
+
+  const webhooks = [];
+  for (const key of list.keys) {
+    const data = await env.WEBHOOKS.get(key.name);
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (!onlyUnprocessed || !parsed.processed) {
+        webhooks.push({ id: key.name, ...parsed });
+      }
+    }
+  }
+
+  return webhooks.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+// ============================================================================
+// CLIPBOARD SYNC
+// ============================================================================
+
+async function handleClipboard(request, env) {
+  const auth = await authenticate(request, env);
+  if (!auth) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const key = `clip:${USERNAME}`;
+
+  // GET - retrieve clipboard
+  if (request.method === 'GET') {
+    const data = await env.CLIPBOARD.get(key);
+    if (!data) {
+      return new Response('', { status: 204 });
+    }
+    const parsed = JSON.parse(data);
+    return new Response(parsed.content, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Clipboard-Timestamp': parsed.timestamp.toString()
+      }
+    });
+  }
+
+  // POST - set clipboard
+  if (request.method === 'POST') {
+    const content = await request.text();
+    const data = {
+      content,
+      timestamp: Date.now()
+    };
+    // Keep for 24 hours
+    await env.CLIPBOARD.put(key, JSON.stringify(data), {
+      expirationTtl: 24 * 60 * 60
+    });
+    return Response.json({ success: true, length: content.length });
+  }
+
+  // DELETE - clear clipboard
+  if (request.method === 'DELETE') {
+    await env.CLIPBOARD.delete(key);
+    return Response.json({ success: true });
+  }
+
+  return Response.json({ error: 'Method not allowed' }, { status: 405 });
+}
+
+// ============================================================================
+// PASTE / SHARE
+// ============================================================================
+
+async function handlePasteCreate(request, env) {
+  if (request.method !== 'POST') {
+    return Response.json({ error: 'POST only' }, { status: 405 });
+  }
+
+  // Optional auth - if authed, paste is linked to user
+  const auth = await authenticate(request, env);
+
+  const content = await request.text();
+  if (!content) {
+    return Response.json({ error: 'Empty content' }, { status: 400 });
+  }
+
+  // Generate short ID
+  const id = generateShortId();
+  const url = new URL(request.url);
+
+  // Get expiry from query param (default 7 days, max 30)
+  const expiryDays = Math.min(
+    parseInt(url.searchParams.get('expire') || '7'),
+    30
+  );
+
+  const paste = {
+    content,
+    created: Date.now(),
+    expires: Date.now() + (expiryDays * 24 * 60 * 60 * 1000),
+    owner: auth?.user?.username || null,
+    views: 0
+  };
+
+  await env.PASTES.put(`paste:${id}`, JSON.stringify(paste), {
+    expirationTtl: expiryDays * 24 * 60 * 60
+  });
+
+  const pasteUrl = `https://${url.host}/p/${id}`;
+
+  return new Response(pasteUrl + '\n', {
+    headers: {
+      'Content-Type': 'text/plain',
+      'X-Paste-Id': id,
+      'X-Paste-Url': pasteUrl
+    }
+  });
+}
+
+async function handlePasteRead(request, env, path) {
+  const id = path.replace('/p/', '');
+  const data = await env.PASTES.get(`paste:${id}`);
+
+  if (!data) {
+    return new Response('Paste not found or expired', { status: 404 });
+  }
+
+  const paste = JSON.parse(data);
+
+  // Increment view count (fire and forget)
+  paste.views++;
+  env.PASTES.put(`paste:${id}`, JSON.stringify(paste));
+
+  // Return raw content
+  return new Response(paste.content, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'X-Paste-Created': new Date(paste.created).toISOString(),
+      'X-Paste-Views': paste.views.toString()
+    }
+  });
+}
+
+// ============================================================================
+// STATUS PAGE + HEALTH CHECKS
+// ============================================================================
+
+async function statusPage(env) {
+  const services = await getServiceStatus(env);
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Status - khamel.com</title>
+  <meta http-equiv="refresh" content="60">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      padding: 2rem;
+      min-height: 100vh;
+    }
+    .container { max-width: 600px; margin: 0 auto; }
+    h1 { color: #888; font-size: 1rem; margin-bottom: 2rem; }
+    h1 span { color: #00ff88; }
+    .service {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem;
+      border-bottom: 1px solid #222;
+    }
+    .service:hover { background: #1a1a2e; }
+    .service-name { color: #e0e0e0; }
+    .status-up { color: #00ff88; }
+    .status-down { color: #ff6b6b; }
+    .status-unknown { color: #888; }
+    .summary {
+      margin-top: 2rem;
+      padding: 1rem;
+      background: #1a1a2e;
+      border-radius: 8px;
+    }
+    .summary-line { color: #888; font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .summary-line:last-child { margin-bottom: 0; }
+    .uptime-good { color: #00ff88; }
+    .uptime-warn { color: #ffaa00; }
+    .uptime-bad { color: #ff6b6b; }
+    a { color: #888; text-decoration: none; }
+    a:hover { color: #00ff88; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>SYSTEM <span>STATUS</span></h1>
+      <a href="/">← Home</a>
+    </div>
+
+    ${services.length === 0 ? '<p style="color:#666">No services configured yet. Health checks run every 5 minutes.</p>' : ''}
+
+    ${services.map(s => `
+      <div class="service">
+        <span class="service-name">${s.name}</span>
+        <span class="status-${s.status}">${s.status.toUpperCase()}</span>
+      </div>
+    `).join('')}
+
+    <div class="summary">
+      <div class="summary-line">Last checked: ${new Date().toISOString()}</div>
+      ${services.length > 0 ? `
+        <div class="summary-line">
+          Uptime: <span class="${getUptimeClass(services)}">${services.filter(s => s.status === 'up').length}/${services.length}</span> services
+        </div>
+      ` : ''}
+    </div>
+  </div>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html' }
+  });
+}
+
+function getUptimeClass(services) {
+  const upCount = services.filter(s => s.status === 'up').length;
+  const ratio = upCount / services.length;
+  if (ratio >= 0.9) return 'uptime-good';
+  if (ratio >= 0.5) return 'uptime-warn';
+  return 'uptime-bad';
+}
+
+async function runHealthChecks(env) {
+  // Services to check - these should have health endpoints
+  const services = [
+    { name: 'jellyfin', url: `${FUNNEL_BASE}/jellyfin/health` },
+    { name: 'photos', url: `${FUNNEL_BASE}/photos/api/server-info/ping` },
+    { name: 'recipes', url: `${FUNNEL_BASE}/recipes/api/app/about` },
+    { name: 'request', url: `${FUNNEL_BASE}/request/api/v1/status` },
+    { name: 'portainer', url: `${FUNNEL_BASE}/portainer/api/system/status` },
+    { name: 'home', url: `${FUNNEL_BASE}/home/` },
+  ];
+
+  for (const service of services) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(service.url, {
+        method: 'HEAD',
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      await env.STATUS.put(`status:${service.name}`, JSON.stringify({
+        status: response.ok ? 'up' : 'down',
+        code: response.status,
+        checked: Date.now()
+      }));
+    } catch (error) {
+      await env.STATUS.put(`status:${service.name}`, JSON.stringify({
+        status: 'down',
+        error: error.message,
+        checked: Date.now()
+      }));
+    }
+  }
+}
+
+async function getServiceStatus(env) {
+  const list = await env.STATUS.list({ prefix: 'status:' });
+  const services = [];
+
+  for (const key of list.keys) {
+    const name = key.name.replace('status:', '');
+    const data = await env.STATUS.get(key.name);
+    const parsed = data ? JSON.parse(data) : { status: 'unknown' };
+    services.push({ name, ...parsed });
+  }
+
+  return services.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ============================================================================
+// AUTH PROXY (OAUTH FOR ANY SERVICE)
+// ============================================================================
+
+async function handleSecureProxy(request, env, path) {
+  const session = await getSession(request, env);
+
+  if (!session) {
+    // Store intended destination and redirect to login
+    const returnUrl = new URL(request.url).href;
+    const loginUrl = new URL('/auth/login', request.url);
+    loginUrl.searchParams.set('return', returnUrl);
+    return Response.redirect(loginUrl.href, 302);
+  }
+
+  // User is authenticated - redirect to actual service
+  // /secure/jellyfin → homelab.deer-panga.ts.net/jellyfin
+  const servicePath = path.replace('/secure/', '');
+  const target = `${FUNNEL_BASE}/${servicePath}`;
+
+  return Response.redirect(target, 302);
+}
+
+// ============================================================================
+// HOME ASSISTANT API
+// ============================================================================
+
+async function handleHomeAPI(request, env, path) {
+  const auth = await authenticate(request, env);
+  if (!auth) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Parse action from path: /home/light/office/toggle
+  const parts = path.replace('/home/', '').split('/');
+  const [domain, entity, action] = parts;
+
+  if (!domain || !entity) {
+    return Response.json({
+      error: 'Usage: /home/{domain}/{entity}/{action}',
+      examples: [
+        '/home/light/office/toggle',
+        '/home/switch/fan/turn_on',
+        '/home/script/goodnight/turn_on'
+      ]
+    }, { status: 400 });
+  }
+
+  // Check if HA_TOKEN is configured
+  if (!env.HA_TOKEN) {
+    return Response.json({
+      error: 'Home Assistant token not configured',
+      hint: 'Add HA_TOKEN secret via: npx wrangler secret put HA_TOKEN'
+    }, { status: 503 });
+  }
+
+  // Forward to Home Assistant via Tailscale
+  const haUrl = `${FUNNEL_BASE}/assistant/api/services/${domain}/${action || 'toggle'}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(haUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.HA_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        entity_id: `${domain}.${entity}`
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const text = await response.text();
+      return Response.json({
+        error: 'Home Assistant error',
+        status: response.status,
+        details: text
+      }, { status: 502 });
+    }
+
+    return Response.json({
+      success: true,
+      action: `${domain}.${entity} → ${action || 'toggle'}`
+    });
+  } catch (error) {
+    return Response.json({
+      error: 'Failed to reach Home Assistant',
+      message: error.message
+    }, { status: 503 });
+  }
+}
+
+// ============================================================================
+// CRON CLEANUP JOBS
+// ============================================================================
+
+async function cleanupOldWebhooks(env) {
+  // Delete processed webhooks older than 24 hours
+  const list = await env.WEBHOOKS.list({ prefix: 'hook:' });
+  const cutoff = Date.now() - (24 * 60 * 60 * 1000);
+
+  for (const key of list.keys) {
+    const data = await env.WEBHOOKS.get(key.name);
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed.processed && parsed.timestamp < cutoff) {
+        await env.WEBHOOKS.delete(key.name);
+      }
+    }
+  }
+}
+
+// ============================================================================
+// ADMIN UI
+// ============================================================================
+
+async function handleAdmin(request, env, path) {
+  const session = await getSession(request, env);
+
+  if (!session) {
+    const domain = getDomain(env);
+    return Response.redirect(`https://${domain}/auth/login`, 302);
+  }
+
+  // API routes
+  if (path.startsWith('/admin/api/')) {
+    return handleAdminAPI(request, env, path);
+  }
+
+  // Admin UI
+  const routes = await getRoutes(env);
+  return new Response(adminPage(routes), {
+    headers: { 'Content-Type': 'text/html' }
+  });
+}
+
+async function handleAdminAPI(request, env, path) {
+  const method = request.method;
+
+  // GET /admin/api/routes - List routes
+  if (method === 'GET' && path === '/admin/api/routes') {
+    const routes = await getRoutes(env);
+    return Response.json(routes);
+  }
+
+  // POST /admin/api/routes - Create route
+  if (method === 'POST' && path === '/admin/api/routes') {
+    const { path: routePath, target } = await request.json();
+
+    if (!routePath || !target) {
+      return Response.json({ error: 'Missing path or target' }, { status: 400 });
+    }
+
+    if (!/^[a-z0-9_-]+$/i.test(routePath)) {
+      return Response.json({ error: 'Invalid path format' }, { status: 400 });
+    }
+
+    await env.ROUTES.put(`${USERNAME}:${routePath}`, target);
+    return Response.json({ success: true });
+  }
+
+  // DELETE /admin/api/routes/:path - Delete route
+  if (method === 'DELETE' && path.startsWith('/admin/api/routes/')) {
+    const routePath = decodeURIComponent(path.replace('/admin/api/routes/', ''));
+    await env.ROUTES.delete(`${USERNAME}:${routePath}`);
+    return Response.json({ success: true });
+  }
+
+  return Response.json({ error: 'Not found' }, { status: 404 });
 }
 
 // ============================================================================
 // HTML PAGES
 // ============================================================================
 
-function landingPage(env) {
+async function homepage(env) {
+  const routes = await getRoutes(env);
+  const domain = getDomain(env);
+
+  const routeItems = routes.map(r => `
+    <a href="/${r.path}" class="route-item">
+      <span class="route-path">/${r.path}</span>
+      <span class="route-arrow">→</span>
+      <span class="route-target">${truncateUrl(r.target)}</span>
+    </a>
+  `).join('');
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Poytz - Personal URL Shortener</title>
+  <title>Poytz - ${domain}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
       background: #0a0a0a;
       color: #e0e0e0;
       min-height: 100vh;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid #333;
+    }
+    .header h1 {
+      font-size: 1rem;
+      font-weight: normal;
+      color: #888;
+    }
+    .header h1 span { color: #00ff88; }
+    .header-links {
+      display: flex;
+      gap: 1rem;
+    }
+    .header a {
+      color: #666;
+      text-decoration: none;
+      font-size: 0.85rem;
+      padding: 0.5rem 1rem;
+      border: 1px solid #333;
+      border-radius: 4px;
+    }
+    .header a:hover {
+      color: #00ff88;
+      border-color: #00ff88;
+    }
+    .routes {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
+      gap: 0.5rem;
     }
-    .container { text-align: center; max-width: 500px; }
-    h1 {
-      font-size: 1.5rem;
-      color: #888;
-      margin-bottom: 0.5rem;
-    }
-    .hero {
-      font-size: 2rem;
-      color: #00ff88;
-      margin-bottom: 0.5rem;
-      font-family: monospace;
-    }
-    .arrow {
-      font-size: 1.5rem;
-      color: #444;
-      margin: 0.5rem 0;
-    }
-    .subtitle {
-      font-size: 1.5rem;
-      color: #00ff88;
-      margin-bottom: 2rem;
-      font-family: monospace;
-    }
-    .cta {
-      background: #1a1a2e;
-      padding: 2rem;
-      border-radius: 8px;
-      margin-bottom: 2rem;
-    }
-    .price-badge {
-      background: #00ff88;
-      color: #0a0a0a;
-      padding: 0.25rem 0.75rem;
-      border-radius: 4px;
-      font-weight: bold;
-      display: inline-block;
-      margin-bottom: 1rem;
-    }
-    .coming-soon {
-      color: #666;
-      font-size: 0.9rem;
-    }
-    .login-section {
-      margin-top: 2rem;
-      padding-top: 2rem;
-      border-top: 1px solid #333;
-    }
-    .login-section p {
-      color: #666;
-      margin-bottom: 1rem;
-    }
-    .btn {
-      display: inline-block;
-      padding: 0.75rem 1.5rem;
-      border-radius: 4px;
-      text-decoration: none;
-      font-weight: 500;
-      transition: all 0.2s;
-    }
-    .btn-google {
-      background: #fff;
-      color: #333;
-    }
-    .btn-google:hover {
-      background: #f0f0f0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>poytz</h1>
-    <div class="hero">yourname.poytz.app</div>
-    <div class="arrow">↓</div>
-    <div class="subtitle">anywhere</div>
-
-    <div class="cta">
-      <div class="price-badge">Coming Soon</div>
-      <p class="coming-soon">Free while in beta.<br>$1-5 once at launch, forever.</p>
-    </div>
-
-    <div class="login-section">
-      <p>Already have an account?</p>
-      <a href="/auth/login" class="btn btn-google">Sign in with Google</a>
-    </div>
-  </div>
-</body>
-</html>`;
-
-  return new Response(html, {
-    headers: { 'Content-Type': 'text/html' }
-  });
-}
-
-function userLandingPage(username) {
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${username}.poytz.app</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a0a;
-      color: #e0e0e0;
-      min-height: 100vh;
+    .route-item {
       display: flex;
       align-items: center;
-      justify-content: center;
+      gap: 1rem;
+      padding: 1rem;
+      background: #1a1a2e;
+      border-radius: 8px;
+      text-decoration: none;
+      color: inherit;
+      transition: all 0.2s;
     }
-    .container { text-align: center; }
-    h1 { color: #00ff88; font-family: monospace; }
-    p { color: #666; margin-top: 1rem; }
+    .route-item:hover {
+      background: #252540;
+      transform: translateX(4px);
+    }
+    .route-path {
+      color: #00ff88;
+      font-weight: 500;
+      min-width: 100px;
+    }
+    .route-arrow {
+      color: #444;
+    }
+    .route-target {
+      color: #888;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .empty {
+      text-align: center;
+      padding: 3rem;
+      color: #666;
+    }
+    .empty a { color: #00ff88; }
+    .features {
+      margin-top: 2rem;
+      padding-top: 2rem;
+      border-top: 1px solid #222;
+    }
+    .features h2 {
+      font-size: 0.85rem;
+      color: #666;
+      margin-bottom: 1rem;
+      font-weight: normal;
+    }
+    .feature-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .feature-item {
+      font-size: 0.8rem;
+      color: #888;
+      padding: 0.25rem 0.75rem;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-decoration: none;
+    }
+    .feature-item:hover {
+      color: #00ff88;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>${username}.poytz.app</h1>
-    <p>Personal URL shortener</p>
+    <div class="header">
+      <h1>MY <span>SHORTCUTS</span></h1>
+      <div class="header-links">
+        <a href="/status">status</a>
+        <a href="/admin">edit</a>
+      </div>
+    </div>
+
+    <div class="routes">
+      ${routeItems || '<div class="empty">No shortcuts yet. <a href="/admin">Add one</a></div>'}
+    </div>
+
+    <div class="features">
+      <h2>ALSO AVAILABLE</h2>
+      <div class="feature-list">
+        <a href="/status" class="feature-item">/status</a>
+        <span class="feature-item">/clip</span>
+        <span class="feature-item">/paste</span>
+        <span class="feature-item">/hooks/*</span>
+        <span class="feature-item">/secure/*</span>
+        <span class="feature-item">/home/*</span>
+        <span class="feature-item">/api/*</span>
+      </div>
+    </div>
   </div>
 </body>
 </html>`;
@@ -458,16 +1048,16 @@ function userLandingPage(username) {
   });
 }
 
-function noAccountPage(email) {
+function unauthorizedPage(email) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>No Account - Poytz</title>
+  <title>Unauthorized</title>
   <style>
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'SF Mono', Monaco, monospace;
       background: #0a0a0a;
       color: #e0e0e0;
       min-height: 100vh;
@@ -485,16 +1075,15 @@ function noAccountPage(email) {
 </head>
 <body>
   <div class="container">
-    <h1>No Account Found</h1>
-    <p>No Poytz account is associated with <code>${email}</code></p>
-    <p>Signups coming soon!</p>
-    <p><a href="/">← Back to home</a></p>
+    <h1>Unauthorized</h1>
+    <p><code>${email}</code> is not authorized.</p>
+    <p><a href="/">← Back</a></p>
   </div>
 </body>
 </html>`;
 }
 
-function adminPage(username, routes) {
+function adminPage(routes) {
   const routeRows = routes.map(r => `
     <tr data-path="${r.path}">
       <td><code>${r.path}</code></td>
@@ -512,7 +1101,7 @@ function adminPage(username, routes) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin - ${username}.poytz.app</title>
+  <title>Admin - Poytz</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -535,6 +1124,7 @@ function adminPage(username, routes) {
       font-weight: normal;
     }
     .header h1 span { color: #00ff88; }
+    .header-links { display: flex; gap: 1rem; }
     .header a {
       color: #666;
       text-decoration: none;
@@ -644,8 +1234,12 @@ function adminPage(username, routes) {
 </head>
 <body>
   <div class="header">
-    <h1>POYTZ · <span>${username}</span></h1>
-    <a href="/auth/logout">Logout</a>
+    <h1>POYTZ · <span>ADMIN</span></h1>
+    <div class="header-links">
+      <a href="/">← Home</a>
+      <a href="/status">Status</a>
+      <a href="/auth/logout">Logout</a>
+    </div>
   </div>
 
   <div id="message" class="message"></div>
@@ -695,7 +1289,6 @@ function adminPage(username, routes) {
           throw new Error(data.error || 'Failed to add route');
         }
 
-        // Add to table
         const tbody = document.getElementById('routes');
         const tr = document.createElement('tr');
         tr.dataset.path = path;
@@ -727,7 +1320,6 @@ function adminPage(username, routes) {
 
         if (!res.ok) throw new Error('Failed to delete');
 
-        // Remove from table
         document.querySelector(\`tr[data-path="\${path}"]\`).remove();
         showMessage('Route deleted', 'success');
       } catch (err) {
