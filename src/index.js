@@ -287,7 +287,7 @@ async function handleRedirect(path, env) {
 
   const subpath = rest.join('/');
   const finalTarget = subpath ? `${target.replace(/\/$/, '')}/${subpath}` : target;
-  return Response.redirect(finalTarget, 302);
+  return Response.redirect(finalTarget, 307);
 }
 
 async function getRoutes(env) {
