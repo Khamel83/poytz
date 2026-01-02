@@ -78,7 +78,7 @@ export default {
       }
 
       // Default: URL shortener redirect
-      return handleRedirect(path, env);
+      return handleRedirect(url, env);
 
     } catch (error) {
       console.error('Error:', error);
@@ -274,7 +274,8 @@ function handleLogout(env) {
 // URL SHORTENER (REDIRECTS)
 // ============================================================================
 
-async function handleRedirect(path, env) {
+async function handleRedirect(url, env) {
+  const path = url.pathname;
   const routePath = path.slice(1);
   if (!routePath) return homepage(env);
 
@@ -286,7 +287,13 @@ async function handleRedirect(path, env) {
   }
 
   const subpath = rest.join('/');
-  const finalTarget = subpath ? `${target.replace(/\/$/, '')}/${subpath}` : target;
+  let finalTarget = subpath ? `${target.replace(/\/$/, '')}/${subpath}` : target;
+
+  // Preserve query string
+  if (url.search) {
+    finalTarget += url.search;
+  }
+
   return Response.redirect(finalTarget, 307);
 }
 
