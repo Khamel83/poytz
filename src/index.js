@@ -37,7 +37,7 @@ export default {
       // Auth routes
       if (path === '/auth/login') return handleOAuthLogin(request, env);
       if (path === '/auth/callback') return handleOAuthCallback(request, env);
-      if (path === '/auth/logout') return handleLogout(env);
+      if (path === '/auth/logout') return handleLogout(request, env);
 
       // Admin UI (session auth)
       if (path === '/admin' || path.startsWith('/admin/')) {
@@ -238,8 +238,8 @@ async function handleOAuthCallback(request, env) {
 
   const domain = getDomain(env);
 
-  // Check for return URL (from secure proxy)
-  if (returnUrl && returnUrl.startsWith('https://')) {
+  // Check for return URL (from secure proxy) — only allow our own domain
+  if (returnUrl && returnUrl.startsWith(`https://${domain}`)) {
     return new Response(null, {
       status: 302,
       headers: {
@@ -259,7 +259,9 @@ async function handleOAuthCallback(request, env) {
   });
 }
 
-function handleLogout(env) {
+async function handleLogout(request, env) {
+  const cookies = parseCookies(request.headers.get('Cookie'));
+  if (cookies.session) await env.SESSIONS.delete(cookies.session);
   const domain = getDomain(env);
   return new Response(null, {
     status: 302,
@@ -547,11 +549,7 @@ async function handlePasteRead(request, env, path) {
 
   const paste = JSON.parse(data);
 
-  // Increment view count (fire and forget)
-  paste.views++;
-  env.PASTES.put(`paste:${id}`, JSON.stringify(paste));
-
-  // Return raw content
+  // Return raw content (no view counter to save KV writes)
   return new Response(paste.content, {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
@@ -1090,15 +1088,23 @@ function unauthorizedPage(email) {
 </html>`;
 }
 
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function adminPage(routes) {
   const routeRows = routes.map(r => `
-    <tr data-path="${r.path}">
-      <td><code>${r.path}</code></td>
+    <tr data-path="${escHtml(r.path)}">
+      <td><code>${escHtml(r.path)}</code></td>
       <td class="target-cell">
-        <input type="text" value="${r.target}" class="target-input" readonly>
+        <input type="text" value="${escHtml(r.target)}" class="target-input" readonly>
       </td>
       <td>
-        <button class="btn-delete" onclick="deleteRoute('${r.path}')">×</button>
+        <button class="btn-delete" onclick="deleteRoute('${escHtml(r.path)}')">×</button>
       </td>
     </tr>
   `).join('');
@@ -1299,15 +1305,27 @@ function adminPage(routes) {
         const tbody = document.getElementById('routes');
         const tr = document.createElement('tr');
         tr.dataset.path = path;
-        tr.innerHTML = \`
-          <td><code>\${path}</code></td>
-          <td class="target-cell">
-            <input type="text" value="\${target}" class="target-input" readonly>
-          </td>
-          <td>
-            <button class="btn-delete" onclick="deleteRoute('\${path}')">×</button>
-          </td>
-        \`;
+        const td1 = document.createElement('td');
+        const code = document.createElement('code');
+        code.textContent = path;
+        td1.appendChild(code);
+        const td2 = document.createElement('td');
+        td2.className = 'target-cell';
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = target;
+        inp.className = 'target-input';
+        inp.readOnly = true;
+        td2.appendChild(inp);
+        const td3 = document.createElement('td');
+        const btn = document.createElement('button');
+        btn.className = 'btn-delete';
+        btn.textContent = '×';
+        btn.onclick = () => deleteRoute(path);
+        td3.appendChild(btn);
+        tr.appendChild(td1);
+        tr.appendChild(td2);
+        tr.appendChild(td3);
         tbody.appendChild(tr);
 
         form.reset();

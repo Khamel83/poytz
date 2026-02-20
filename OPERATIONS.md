@@ -6,7 +6,9 @@ Quick reference for day-to-day Poytz operations.
 
 ```bash
 cat ~/.poytz-api-key
-# poytz_cce20a6e877535e2b8d1253de5f4f3f0c79d64d09f390a49
+# Stored in ~/.poytz-api-key (not committed). Rotate with:
+#   openssl rand -hex 32 | sed 's/^/poytz_/' | tee ~/.poytz-api-key
+#   cd ~/github/poytz && npx wrangler secret put POYTZ_API_KEY
 ```
 
 ## Common Operations

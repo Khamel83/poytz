@@ -36,7 +36,5 @@ id = "0094069c06f64b11b0548a4ae11e19e0"
 binding = "STATUS"
 id = "9b95a43338904c87b1dac6b5fddcb903"
 
-# Cron Triggers - health checks every 5 minutes
-# Requires workers.dev subdomain - enable after initial deploy
-# [triggers]
-# crons = ["*/5 * * * *"]
+[triggers]
+crons = ["*/30 * * * *"]

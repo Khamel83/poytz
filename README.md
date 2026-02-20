@@ -39,7 +39,7 @@ Poytz + Tailscale Funnel = **zero maintenance external access**.
 
 ### This Is NOT For You If
 
-- You need to hide the destination URL (Poytz uses 302 redirects)
+- You need to hide the destination URL (Poytz uses 307 redirects)
 - You need load balancing or advanced routing rules
 - You're running a production SaaS (this is personal infrastructure)
 - You need sub-millisecond latency (there's a redirect hop)
@@ -50,7 +50,7 @@ Poytz + Tailscale Funnel = **zero maintenance external access**.
 
 | Feature | Endpoint | Description |
 |---------|----------|-------------|
-| URL Shortener | `khamel.com/photos` | 302 redirect to any URL |
+| URL Shortener | `khamel.com/photos` | 307 redirect to any URL |
 | Public API | `/api/routes` | CRUD routes programmatically |
 | Webhook Receiver | `/hooks/*` | Store webhooks for later processing |
 | Clipboard Sync | `/clip` | Copy on one device, paste on another |
@@ -70,7 +70,7 @@ Poytz + Tailscale Funnel = **zero maintenance external access**.
 │                                                                     │
 │   khamel.com/* ──→ Poytz Worker ──→ KV Storage                     │
 │                         │                                           │
-│                         ├── /photos      → 302 redirect             │
+│                         ├── /photos      → 307 redirect             │
 │                         ├── /api/*       → CRUD routes              │
 │                         ├── /hooks/*     → Store webhook → KV       │
 │                         ├── /clip        → GET/POST clipboard       │
@@ -223,7 +223,7 @@ curl -X POST https://khamel.com/hooks/github -d '{"event": "push"}'
 curl https://khamel.com/api/webhooks -H "X-API-Key: $KEY"
 
 # Mark webhook processed
-curl -X POST https://khamel.com/api/webhooks/hook:github:123456/process -H "X-API-Key: $KEY"
+curl -X POST https://khamel.com/api/webhooks/hook:github:123456/processed -H "X-API-Key: $KEY"
 ```
 
 ### Home Assistant
@@ -301,7 +301,7 @@ khamel.com → Cloudflare Tunnel → Traefik → Docker container
 
 **New way:**
 ```
-khamel.com → Poytz (302) → Tailscale Funnel → funnel-proxy → Docker container
+khamel.com → Poytz (307) → Tailscale Funnel → funnel-proxy → Docker container
 ```
 
 See `homelab/services/funnel-proxy/` for the nginx configuration.
