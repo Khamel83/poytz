@@ -32,6 +32,7 @@ export default {
     try {
       // Static routes
       if (path === '/') return handleRootProxy(request, env);
+      if (path === '/dashboard' || path === '/dashboard/') return Response.redirect(new URL('/', request.url).origin, 301);
       if (path === '/status') return statusPage(env);
 
       // Auth routes
@@ -75,6 +76,11 @@ export default {
       // Home Assistant API
       if (path.startsWith('/home/')) {
         return handleHomeAPI(request, env, path);
+      }
+
+      // Legacy oauth2-proxy routes - redirect to new auth
+      if (path.startsWith('/oauth2/')) {
+        return Response.redirect(new URL('/auth/login', request.url).origin + '?return=' + encodeURIComponent(new URL(request.url).origin + '/'), 301);
       }
 
       // Default: URL shortener redirect
