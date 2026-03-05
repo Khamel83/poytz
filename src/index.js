@@ -255,11 +255,11 @@ async function handleOAuthCallback(request, env) {
     });
   }
 
-  // Default redirect to admin
+  // Default redirect to root
   return new Response(null, {
     status: 302,
     headers: {
-      'Location': `https://${domain}/admin`,
+      'Location': `https://${domain}/`,
       'Set-Cookie': `session=${sessionId}; HttpOnly; Secure; SameSite=Lax; Domain=.${domain}; Max-Age=${30 * 24 * 60 * 60}; Path=/`
     }
   });
