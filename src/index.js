@@ -1063,18 +1063,19 @@ async function handleRootProxy(request, env) {
 
   if (!session) {
     // Not authenticated - redirect to OAuth login
-    const returnUrl = new URL(request.url).href;
-    const loginUrl = new URL('/auth/login', request.url);
-    loginUrl.searchParams.set('return', returnUrl);
+    const requestUrl = new URL(request.url);
+    const loginUrl = new URL('/auth/login', requestUrl.origin);
+    loginUrl.searchParams.set('return', requestUrl.href);
     return Response.redirect(loginUrl.href, 302);
   }
 
   // Authenticated - proxy to homelab funnel (which goes to nginx → Homepage)
+  const requestUrl = new URL(request.url);
   const targetUrl = new URL(FUNNEL_BASE);
-  targetUrl.pathname = request.url.pathname;
+  targetUrl.pathname = requestUrl.pathname;
 
   // Forward query parameters
-  for (const [key, value] of request.url.searchParams) {
+  for (const [key, value] of requestUrl.searchParams) {
     targetUrl.searchParams.set(key, value);
   }
 
