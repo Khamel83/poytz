@@ -31,7 +31,7 @@ export default {
 
     try {
       // Static routes
-      if (path === '/') return homepage(env);
+      if (path === '/') return handleRootProxy(request, env);
       if (path === '/status') return statusPage(env);
 
       // Auth routes
@@ -1051,6 +1051,44 @@ async function homepage(env) {
   return new Response(html, {
     headers: { 'Content-Type': 'text/html' }
   });
+}
+
+// ============================================================================
+// ROOT PROXY (Homepage Dashboard with SSO)
+// ============================================================================
+
+async function handleRootProxy(request, env) {
+  // Check for OAuth session
+  const session = await getSession(request, env);
+
+  if (!session) {
+    // Not authenticated - redirect to OAuth login
+    const returnUrl = new URL(request.url).href;
+    const loginUrl = new URL('/auth/login', request.url);
+    loginUrl.searchParams.set('return', returnUrl);
+    return Response.redirect(loginUrl.href, 302);
+  }
+
+  // Authenticated - proxy to homelab funnel (which goes to nginx → Homepage)
+  const targetUrl = new URL(FUNNEL_BASE);
+  targetUrl.pathname = request.url.pathname;
+
+  // Forward query parameters
+  for (const [key, value] of request.url.searchParams) {
+    targetUrl.searchParams.set(key, value);
+  }
+
+  // Forward the request to the funnel
+  const response = await fetch(targetUrl.toString(), {
+    method: request.method,
+    headers: {
+      ...Object.fromEntries(request.headers),
+      'Host': targetUrl.host
+    },
+    body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined
+  });
+
+  return response;
 }
 
 function unauthorizedPage(email) {
