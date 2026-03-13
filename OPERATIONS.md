@@ -126,6 +126,17 @@ docker restart funnel-proxy
 
 ## Troubleshooting
 
+### Poytz API returns "Unauthorized"
+```bash
+# This means the local API key doesn't match the deployed secret
+# Fix: Redeploy Poytz Worker (secret will sync automatically)
+cd ~/github/poytz
+npx wrangler deploy
+
+# Wait 5 seconds, then test:
+curl https://khamel.com/api/routes -H "X-API-Key: $(cat ~/.poytz-api-key)"
+```
+
 ### Service returns 502
 ```bash
 # Check if container is on correct network
